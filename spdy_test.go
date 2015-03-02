@@ -28,7 +28,7 @@ func TestSpdyStreams(t *testing.T) {
 	}
 	go spdyConn.Serve(NoOpStreamHandler)
 
-	authenticated = true
+	setAuthenticated(true)
 	stream, streamErr := spdyConn.CreateStream(http.Header{}, nil, false)
 	if streamErr != nil {
 		t.Fatalf("Error creating stream: %s", streamErr)
@@ -122,7 +122,7 @@ func TestSpdyStreams(t *testing.T) {
 		t.Fatalf("Error reseting stream: %s", streamResetErr)
 	}
 
-	authenticated = false
+	setAuthenticated(false)
 	badStream, badStreamErr := spdyConn.CreateStream(http.Header{}, nil, false)
 	if badStreamErr != nil {
 		t.Fatalf("Error creating stream: %s", badStreamErr)
@@ -203,7 +203,7 @@ func TestHalfClose(t *testing.T) {
 	}
 	go spdyConn.Serve(NoOpStreamHandler)
 
-	authenticated = true
+	setAuthenticated(true)
 	stream, streamErr := spdyConn.CreateStream(http.Header{}, nil, false)
 	if streamErr != nil {
 		t.Fatalf("Error creating stream: %s", streamErr)
@@ -289,7 +289,7 @@ func TestUnexpectedRemoteConnectionClosed(t *testing.T) {
 		}
 		go spdyConn.Serve(NoOpStreamHandler)
 
-		authenticated = true
+		setAuthenticated(true)
 		stream, streamErr := spdyConn.CreateStream(http.Header{}, nil, false)
 		if streamErr != nil {
 			t.Fatalf("Error creating stream: %s", streamErr)
@@ -414,7 +414,7 @@ func TestIdleShutdownRace(t *testing.T) {
 	}
 	go spdyConn.Serve(NoOpStreamHandler)
 
-	authenticated = true
+	setAuthenticated(true)
 	stream, err := spdyConn.CreateStream(http.Header{}, nil, false)
 	if err != nil {
 		t.Fatalf("Error creating stream: %v", err)
@@ -555,7 +555,7 @@ func TestIdleWithData(t *testing.T) {
 
 	spdyConn.SetIdleTimeout(25 * time.Millisecond)
 
-	authenticated = true
+	setAuthenticated(true)
 	stream, err := spdyConn.CreateStream(http.Header{}, nil, false)
 	if err != nil {
 		t.Fatalf("Error creating stream: %v", err)
@@ -621,7 +621,7 @@ func TestIdleRace(t *testing.T) {
 
 	spdyConn.SetIdleTimeout(10 * time.Millisecond)
 
-	authenticated = true
+	setAuthenticated(true)
 
 	for i := 0; i < 10; i++ {
 		_, err := spdyConn.CreateStream(http.Header{}, nil, false)
@@ -706,7 +706,7 @@ func TestStreamReset(t *testing.T) {
 	}
 	go spdyConn.Serve(NoOpStreamHandler)
 
-	authenticated = true
+	setAuthenticated(true)
 	stream, streamErr := spdyConn.CreateStream(http.Header{}, nil, false)
 	if streamErr != nil {
 		t.Fatalf("Error creating stream: %s", streamErr)
@@ -754,7 +754,7 @@ func TestStreamResetWithDataRemaining(t *testing.T) {
 	}
 	go spdyConn.Serve(NoOpStreamHandler)
 
-	authenticated = true
+	setAuthenticated(true)
 	stream, streamErr := spdyConn.CreateStream(http.Header{}, nil, false)
 	if streamErr != nil {
 		t.Fatalf("Error creating stream: %s", streamErr)
@@ -784,9 +784,18 @@ func TestStreamResetWithDataRemaining(t *testing.T) {
 	wg.Wait()
 }
 
+var authLock sync.RWMutex
 var authenticated bool
 
+func setAuthenticated(b bool) {
+	authLock.Lock()
+	defer authLock.Unlock()
+	authenticated = b
+}
+
 func authStreamHandler(stream *Stream) {
+	authLock.RLock()
+	defer authLock.RUnlock()
 	if !authenticated {
 		stream.Refuse()
 	}
