@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/moby/spdystream/spdy"
@@ -40,18 +41,38 @@ const (
 	QUEUE_SIZE    = 50
 )
 
+// atomicBool uses load/store operations on an int32 to simulate an atomic boolean.
+type atomicBool struct {
+	v int32
+}
+
+// set sets the int32 to the given boolean.
+func (a *atomicBool) set(value bool) {
+	if value {
+		atomic.StoreInt32(&a.v, 1)
+		return
+	}
+	atomic.StoreInt32(&a.v, 0)
+}
+
+// get returns true if the int32 == 1
+func (a *atomicBool) get() bool {
+	return atomic.LoadInt32(&a.v) == 1
+}
+
 type StreamHandler func(stream *Stream)
 
 type AuthHandler func(header http.Header, slot uint8, parent uint32) bool
 
 type idleAwareFramer struct {
-	f              *spdy.Framer
-	conn           *Connection
-	writeLock      sync.Mutex
-	resetChan      chan struct{}
-	setTimeoutLock sync.Mutex
-	setTimeoutChan chan time.Duration
-	timeout        time.Duration
+	f                *spdy.Framer
+	conn             *Connection
+	writeLock        sync.Mutex
+	resetChan        chan struct{}
+	setTimeoutLock   sync.Mutex
+	setTimeoutChan   chan time.Duration
+	timeout          time.Duration
+	ignorePingFrames *atomicBool
 }
 
 func newIdleAwareFramer(framer *spdy.Framer) *idleAwareFramer {
@@ -60,7 +81,8 @@ func newIdleAwareFramer(framer *spdy.Framer) *idleAwareFramer {
 		resetChan: make(chan struct{}, 2),
 		// setTimeoutChan needs to be buffered to avoid deadlocks when calling setIdleTimeout at about
 		// the same time the connection is being closed
-		setTimeoutChan: make(chan time.Duration, 1),
+		setTimeoutChan:   make(chan time.Duration, 1),
+		ignorePingFrames: &atomicBool{0},
 	}
 	return iaf
 }
@@ -158,6 +180,13 @@ func (i *idleAwareFramer) WriteFrame(frame spdy.Frame) error {
 		return err
 	}
 
+	if i.ignorePingFrames.get() {
+		_, ok := frame.(*spdy.PingFrame)
+		if ok {
+			return nil
+		}
+	}
+
 	i.resetChan <- struct{}{}
 
 	return nil
@@ -169,16 +198,24 @@ func (i *idleAwareFramer) ReadFrame() (spdy.Frame, error) {
 		return nil, err
 	}
 
+	if i.ignorePingFrames.get() {
+		_, ok := frame.(*spdy.PingFrame)
+		if ok {
+			return frame, nil
+		}
+	}
+
 	// resetChan should never be closed since it is only closed
 	// when the connection has closed its closeChan. This closure
 	// only occurs after all Reads have finished
 	// TODO (dmcgowan): refactor relationship into connection
 	i.resetChan <- struct{}{}
-
 	return frame, nil
 }
 
-func (i *idleAwareFramer) setIdleTimeout(timeout time.Duration) {
+func (i *idleAwareFramer) setIdleTimeout(timeout time.Duration, ignorePingFrames bool) {
+	i.ignorePingFrames.set(ignorePingFrames)
+
 	i.setTimeoutLock.Lock()
 	defer i.setTimeoutLock.Unlock()
 
@@ -834,7 +871,13 @@ func (s *Connection) SetCloseTimeout(timeout time.Duration) {
 // SetIdleTimeout sets the amount of time the connection may sit idle before
 // it is forcefully terminated.
 func (s *Connection) SetIdleTimeout(timeout time.Duration) {
-	s.framer.setIdleTimeout(timeout)
+	s.framer.setIdleTimeout(timeout, false)
+}
+
+// SetUserIdleTimeout sets the amount of time the connection may sit idle,
+// not taking into account SPDY Ping frames, before it is forcefully terminated
+func (s *Connection) SetUserIdleTimeout(timeout time.Duration) {
+	s.framer.setIdleTimeout(timeout, true)
 }
 
 func (s *Connection) sendHeaders(headers http.Header, stream *Stream, fin bool) error {
